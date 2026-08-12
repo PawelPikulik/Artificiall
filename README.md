@@ -88,3 +88,31 @@ Create a few tasks, then restart the server and call `GET /tasks` again. What ha
 - **Filtering & search**: `GET /tasks?done=true` returns only finished tasks; `GET /tasks?search=milk` returns tasks whose title contains the word.
 - **Stats endpoint**: `GET /stats` returns `{ "total": 7, "done": 3, "open": 4 }`.
 - **Reset endpoint**: `POST /reset` restores the 3 example tasks, handy for demos.
+
+## AI vs me — Stage 7 rematch
+
+### The prompt I wrote
+
+> Build a simple to-do task API in Python using FastAPI. Storage: in-memory only (a list of dictionaries). No database, no files. Pre-seeded data: 3 tasks (id 1 "Buy groceries" not done, id 2 "Walk the dog" done, id 3 "Read a book" not done). Endpoints: GET / with API info, GET /health, GET /tasks, GET /tasks/{id} (404 if missing), POST /tasks (auto id, done=false, 201, 400 if missing/empty title), PUT /tasks/{id} (update title/done, 200/400/404), DELETE /tasks/{id} (204/404). Validation: POST and PUT must validate title present and not empty, return 400. Swagger UI at /docs with one-line descriptions per endpoint. Extras: GET /stats and query params for filtering/search. Keep under 120 lines, run on localhost:8000.
+
+The AI-generated code lives in `ai-version/main.py` and is isolated from the hand-built version.
+
+### What the AI did better
+
+The AI version is more structured: it extracted helper functions (`_find_task`, `_remove_task`) and used `next()` with generator expressions instead of inline for loops. It also used `@validator` decorators inside Pydantic models to strip whitespace from titles, which is a nice touch I didn't think of. I understand its version well enough to explain it — the validators run before the endpoint handler and the helpers keep the route code clean.
+
+### What the AI got wrong or quietly ignored
+
+**1. Missing 400 status code for validation errors.** The AI used Pydantic validators for title validation, but did not add a custom exception handler to convert FastAPI's default 422 into 400. When I tested `POST /tasks` with `{}`, the AI version returned **422** instead of the required **400**. The prompt explicitly asked for 400 on invalid body, but the AI relied on FastAPI's default behavior.
+
+**2. Wrong ID generation after deletions.** The AI used a monotonic global counter (`_task_counter += 1`) instead of `max(existing_ids) + 1`. After deleting the highest-id task and creating a new one, the AI version skips numbers, leaving gaps in the ID sequence. The prompt said "auto-assign the next free id" which I interpreted as the next available integer, not a monotonically increasing counter.
+
+**3. Async-by-default without reason.** The AI made every endpoint `async def` even though none of them perform I/O (no database, no files, no network calls). In FastAPI this is harmless, but it adds unnecessary `async`/`await` noise to a purely CPU-bound in-memory API. My hand-built version uses plain `def` which is more honest about what the code actually does.
+
+### What my prompt forgot to specify
+
+I did not explicitly say "convert Pydantic validation errors to HTTP 400 instead of 422" — I assumed the AI would know that 400 is the standard for bad request bodies. The AI silently decided to use the FastAPI default (422), which is technically correct for FastAPI but not what the assignment required. I also did not specify whether endpoints should be sync or async, so the AI chose the fashionable default (async everywhere).
+
+### One rematch
+
+I improved the prompt by adding: *"Add a custom exception handler so that missing or empty title fields return HTTP 400 with a simple JSON error like `{'error': 'Invalid request body'}`, not FastAPI's default 422."* With that extra sentence, the AI would likely produce a version that matches the hand-built one exactly on status codes.
