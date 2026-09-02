@@ -1,16 +1,18 @@
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Request, Query, Depends
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 
 import db
+import auth
 
 app = FastAPI(
     title="Task API",
-    version="1.0.0",
-    description="A simple CRUD API for managing tasks.",
+    version="2.0.0",
+    description="A secure CRUD API for managing tasks with Supabase authentication.",
 )
+
 
 
 @app.exception_handler(RequestValidationError)
@@ -31,13 +33,23 @@ class TaskUpdate(BaseModel):
     done: Optional[bool] = Field(None, description="Whether the task is completed")
 
 
+class SignupRequest(BaseModel):
+    email: str = Field(..., description="User email")
+    password: str = Field(..., min_length=6, description="User password")
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., description="User email")
+    password: str = Field(..., description="User password")
+
+
 @app.get("/", summary="API Info")
 def read_root():
     """Return API metadata."""
     return {
         "name": "Task API",
-        "version": "1.0",
-        "endpoints": ["/tasks"],
+        "version": "2.0",
+        "endpoints": ["/tasks", "/auth", "/public", "/protected"],
     }
 
 
@@ -45,6 +57,60 @@ def read_root():
 def health_check():
     """Check if the server is alive."""
     return {"status": "ok"}
+
+
+# ------------------------------------------------------------------
+# Auth routes
+# ------------------------------------------------------------------
+
+@app.post("/auth/signup", status_code=201, summary="Sign Up")
+def signup(payload: SignupRequest):
+    """Create a new user account via Supabase Auth."""
+    try:
+        response = auth.sign_up(payload.email, payload.password)
+        return response.user
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/auth/login", summary="Log In")
+def login(payload: LoginRequest):
+    """Authenticate user and return JWT tokens."""
+    try:
+        response = auth.sign_in(payload.email, payload.password)
+        if response.session is None:
+            raise HTTPException(status_code=401, detail="Invalid login credentials")
+        return {
+            "access_token": response.session.access_token,
+            "refresh_token": response.session.refresh_token,
+            "user": response.user,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid login credentials")
+
+
+@app.post("/auth/logout", status_code=204, summary="Log Out", dependencies=[Depends(auth.get_current_user)])
+def logout(credentials=Depends(auth.security)):
+    """Terminate the user session. Requires Bearer token."""
+    token = credentials.credentials
+    auth.sign_out(token)
+    return None
+
+
+@app.get("/public/info", summary="Public Info")
+def public_info():
+    """Public endpoint that requires no authentication."""
+    return {"message": "Welcome stranger! This info is public."}
+
+
+@app.get("/protected/profile", summary="Protected Profile", dependencies=[Depends(auth.get_current_user)])
+def protected_profile(user=Depends(auth.get_current_user)):
+    """Read private user profile data. Requires Bearer token."""
+    return {
+        "id": user.id,
+        "email": user.email,
+        "created_at": user.created_at,
+    }
 
 
 @app.get("/tasks", summary="List Tasks")
