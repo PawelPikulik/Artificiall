@@ -68,7 +68,12 @@ def signup(payload: SignupRequest):
     """Create a new user account via Supabase Auth."""
     try:
         response = auth.sign_up(payload.email, payload.password)
-        return response.user
+        user = response.user
+        return {
+            "id": user.id,
+            "email": user.email,
+            "created_at": user.created_at,
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -80,10 +85,15 @@ def login(payload: LoginRequest):
         response = auth.sign_in(payload.email, payload.password)
         if response.session is None:
             raise HTTPException(status_code=401, detail="Invalid login credentials")
+        user = response.user
         return {
             "access_token": response.session.access_token,
             "refresh_token": response.session.refresh_token,
-            "user": response.user,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "created_at": user.created_at,
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid login credentials")
