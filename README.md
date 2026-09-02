@@ -1,39 +1,51 @@
 # Task API
 
-A simple CRUD API for managing tasks, built with FastAPI and **SQLite**.
+A simple CRUD API for managing tasks, built with FastAPI and **PostgreSQL** running in Docker.
 
-## Why SQLite?
+## Why PostgreSQL + Docker?
 
-SQLite was chosen because it is a lightweight, serverless SQL database stored in a single file. It requires no separate installation, no running server process, and no configuration. The database file (`tasks.db`) is created automatically the first time the application starts, making it ideal for learning and small projects.
+PostgreSQL is a production-grade relational database. Docker lets us run it locally with zero system installation, and `docker compose up` starts the entire stack (database + app) in one command. A named volume persists PostgreSQL data across container restarts, so tasks survive even when the container is recreated.
 
 ## Quick start
 
-1. **Activate the virtual environment**
+1. **Clone the repository**
    ```bash
-   source venv/Scripts/activate   # Windows (Git Bash)
-   # source venv/bin/activate     # Linux / macOS
+   git clone https://github.com/PawelPikulik/Artificiall.git
+   cd Artificiall
    ```
 
-2. **Install dependencies**
+2. **Create the environment file**
    ```bash
-   pip install -r requirements.txt
+   cp .env.example .env
    ```
+   The `.env` file is already gitignored. `.env.example` is committed as a template.
 
-3. **Run the server**
+3. **Start the stack**
    ```bash
-   uvicorn main:app --reload
+   docker compose up
    ```
+   This starts PostgreSQL and the FastAPI app. The first run creates the database and seeds the `tasks` table automatically via `init.sql`.
 
 4. **Open in browser**
    - API root: http://localhost:8000/
    - Swagger UI (interactive docs): http://localhost:8000/docs
 
+## Architecture
+
+The API layer (`main.py`) is completely unchanged from Week 2 and Week 3. The only difference is the storage implementation (`db.py`), which now uses **psycopg2** to talk to PostgreSQL instead of **sqlite3**.
+
+```
+Client -> API (main.py) -> PostgreSQL repository (db.py) -> PostgreSQL in Docker
+```
+
+This proves that swapping storage is an implementation detail — the routes, request bodies, and responses remain identical.
+
 ## Database
 
-- **File location**: `tasks.db` in the project root (created automatically on first run).
-- **Table**: `tasks` with columns `id` (integer, primary key), `title` (text), `done` (boolean).
-- **Seed data**: Three example tasks are inserted only when the table is empty.
-- **Persistence**: Data survives server restarts.
+- **Engine**: PostgreSQL 15 (Alpine image)
+- **Table**: `tasks` with columns `id` (SERIAL PRIMARY KEY), `title` (TEXT), `done` (BOOLEAN)
+- **Seed data**: Three example tasks are inserted automatically on first container startup via `init.sql`
+- **Persistence**: Data survives both app restarts and container restarts thanks to the `postgres_data` Docker volume
 
 ## Endpoints
 
@@ -51,16 +63,16 @@ SQLite was chosen because it is a lightweight, serverless SQL database stored in
 
 ## Example SQL query
 
-```sql
-SELECT * FROM tasks WHERE done = 1;
-```
+Connect to the running PostgreSQL container and run queries directly:
 
-This query returns every completed task directly from the database. You can run it in any SQLite viewer (e.g., **DB Browser for SQLite**) while the server is running and see the results reflected immediately in the API.
+```bash
+docker exec -it artificiall-db psql -U artificiall -d artificiall -c "SELECT * FROM tasks WHERE done = TRUE;"
+```
 
 ## Example curl session
 
 ```bash
-# Start the server first: uvicorn main:app --reload
+# Start the stack first: docker compose up
 
 # Read all tasks
 curl -i http://localhost:8000/tasks
@@ -100,16 +112,26 @@ curl -i -X POST http://localhost:8000/tasks \
 
 ## The persistence experiment
 
-Create a few tasks, then restart the server and call `GET /tasks` again. The tasks are still there. Because data is stored in a SQLite file on disk instead of in memory, it survives server restarts. This is the core difference between Week 2 (in-memory) and Week 3 (database).
+Create a few tasks, then run `docker compose down` followed by `docker compose up`. The tasks are still there because the PostgreSQL data is stored in a named Docker volume (`postgres_data`) that persists across container restarts.
+
+This is the core difference from Week 2 (in-memory) and a step up from Week 3 (SQLite file): the database itself is now a separate service with its own persistent storage.
 
 ## Extras included
 
-- **Filtering & search**: `GET /tasks?done=true` returns only finished tasks; `GET /tasks?search=milk` returns tasks whose title contains the word. Both are implemented with SQL `WHERE` clauses.
+- **Filtering & search**: `GET /tasks?done=true` returns only finished tasks; `GET /tasks?search=milk` returns tasks whose title contains the word. Both are implemented with SQL `WHERE` clauses in PostgreSQL.
 - **Stats endpoint**: `GET /stats` returns `{ "total": 7, "done": 3, "open": 4 }` using SQL `COUNT()`.
 - **Reset endpoint**: `POST /reset` restores the 3 example tasks, handy for demos.
+
+## Testing
+
+A test suite (`test_api.py`) covers all endpoints. Run it while the stack is up:
+
+```bash
+python test_api.py
+```
 
 ## Database viewer screenshot
 
 ![DB Browser for SQLite showing the tasks table](screenshot.png)
 
-> *Take a screenshot of DB Browser for SQLite showing the `tasks` table and save it as `screenshot.png` in the project root.*
+> *Screenshot taken from Week 3 (SQLite). The same table now lives in PostgreSQL inside Docker.*
