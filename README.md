@@ -1,6 +1,10 @@
 # Task API
 
-A simple CRUD API for managing tasks, built with FastAPI. The data lives in memory only — restarting the server resets the task list to the original three examples.
+A simple CRUD API for managing tasks, built with FastAPI and **SQLite**.
+
+## Why SQLite?
+
+SQLite was chosen because it is a lightweight, serverless SQL database stored in a single file. It requires no separate installation, no running server process, and no configuration. The database file (`tasks.db`) is created automatically the first time the application starts, making it ideal for learning and small projects.
 
 ## Quick start
 
@@ -24,6 +28,13 @@ A simple CRUD API for managing tasks, built with FastAPI. The data lives in memo
    - API root: http://localhost:8000/
    - Swagger UI (interactive docs): http://localhost:8000/docs
 
+## Database
+
+- **File location**: `tasks.db` in the project root (created automatically on first run).
+- **Table**: `tasks` with columns `id` (integer, primary key), `title` (text), `done` (boolean).
+- **Seed data**: Three example tasks are inserted only when the table is empty.
+- **Persistence**: Data survives server restarts.
+
 ## Endpoints
 
 | Method | Path | Description | Status codes |
@@ -37,6 +48,14 @@ A simple CRUD API for managing tasks, built with FastAPI. The data lives in memo
 | DELETE | `/tasks/{id}` | Delete a task | 204, 404 |
 | GET | `/stats` | Task statistics | 200 |
 | POST | `/reset` | Reset to the 3 default tasks | 200 |
+
+## Example SQL query
+
+```sql
+SELECT * FROM tasks WHERE done = 1;
+```
+
+This query returns every completed task directly from the database. You can run it in any SQLite viewer (e.g., **DB Browser for SQLite**) while the server is running and see the results reflected immediately in the API.
 
 ## Example curl session
 
@@ -79,40 +98,18 @@ curl -i -X POST http://localhost:8000/tasks \
 # {"error":"Invalid request body"}
 ```
 
-## The mortality experiment
+## The persistence experiment
 
-Create a few tasks, then restart the server and call `GET /tasks` again. What happened? The tasks you created are gone, and only the three seeded examples remain. This is because the data lives **in memory** — when the program stops, the variables are wiped. That is exactly why databases exist: they persist data beyond the lifetime of a single process. This observation is the reason Week 3 of the course introduces databases.
+Create a few tasks, then restart the server and call `GET /tasks` again. The tasks are still there. Because data is stored in a SQLite file on disk instead of in memory, it survives server restarts. This is the core difference between Week 2 (in-memory) and Week 3 (database).
 
 ## Extras included
 
-- **Filtering & search**: `GET /tasks?done=true` returns only finished tasks; `GET /tasks?search=milk` returns tasks whose title contains the word.
-- **Stats endpoint**: `GET /stats` returns `{ "total": 7, "done": 3, "open": 4 }`.
+- **Filtering & search**: `GET /tasks?done=true` returns only finished tasks; `GET /tasks?search=milk` returns tasks whose title contains the word. Both are implemented with SQL `WHERE` clauses.
+- **Stats endpoint**: `GET /stats` returns `{ "total": 7, "done": 3, "open": 4 }` using SQL `COUNT()`.
 - **Reset endpoint**: `POST /reset` restores the 3 example tasks, handy for demos.
 
-## AI vs me — Stage 7 rematch
+## Database viewer screenshot
 
-### The prompt I wrote
+![DB Browser for SQLite showing the tasks table](screenshot.png)
 
-> Build a simple to-do task API in Python using FastAPI. Storage: in-memory only (a list of dictionaries). No database, no files. Pre-seeded data: 3 tasks (id 1 "Buy groceries" not done, id 2 "Walk the dog" done, id 3 "Read a book" not done). Endpoints: GET / with API info, GET /health, GET /tasks, GET /tasks/{id} (404 if missing), POST /tasks (auto id, done=false, 201, 400 if missing/empty title), PUT /tasks/{id} (update title/done, 200/400/404), DELETE /tasks/{id} (204/404). Validation: POST and PUT must validate title present and not empty, return 400. Swagger UI at /docs with one-line descriptions per endpoint. Extras: GET /stats and query params for filtering/search. Keep under 120 lines, run on localhost:8000.
-
-The AI-generated code lives in `ai-version/main.py` and is isolated from the hand-built version.
-
-### What the AI did better
-
-The AI version is more structured: it extracted helper functions (`_find_task`, `_remove_task`) and used `next()` with generator expressions instead of inline for loops. It also used `@validator` decorators inside Pydantic models to strip whitespace from titles, which is a nice touch I didn't think of. I understand its version well enough to explain it — the validators run before the endpoint handler and the helpers keep the route code clean.
-
-### What the AI got wrong or quietly ignored
-
-**1. Missing 400 status code for validation errors.** The AI used Pydantic validators for title validation, but did not add a custom exception handler to convert FastAPI's default 422 into 400. When I tested `POST /tasks` with `{}`, the AI version returned **422** instead of the required **400**. The prompt explicitly asked for 400 on invalid body, but the AI relied on FastAPI's default behavior.
-
-**2. Wrong ID generation after deletions.** The AI used a monotonic global counter (`_task_counter += 1`) instead of `max(existing_ids) + 1`. After deleting the highest-id task and creating a new one, the AI version skips numbers, leaving gaps in the ID sequence. The prompt said "auto-assign the next free id" which I interpreted as the next available integer, not a monotonically increasing counter.
-
-**3. Async-by-default without reason.** The AI made every endpoint `async def` even though none of them perform I/O (no database, no files, no network calls). In FastAPI this is harmless, but it adds unnecessary `async`/`await` noise to a purely CPU-bound in-memory API. My hand-built version uses plain `def` which is more honest about what the code actually does.
-
-### What my prompt forgot to specify
-
-I did not explicitly say "convert Pydantic validation errors to HTTP 400 instead of 422" — I assumed the AI would know that 400 is the standard for bad request bodies. The AI silently decided to use the FastAPI default (422), which is technically correct for FastAPI but not what the assignment required. I also did not specify whether endpoints should be sync or async, so the AI chose the fashionable default (async everywhere).
-
-### One rematch
-
-I improved the prompt by adding: *"Add a custom exception handler so that missing or empty title fields return HTTP 400 with a simple JSON error like `{'error': 'Invalid request body'}`, not FastAPI's default 422."* With that extra sentence, the AI would likely produce a version that matches the hand-built one exactly on status codes.
+> *Take a screenshot of DB Browser for SQLite showing the `tasks` table and save it as `screenshot.png` in the project root.*

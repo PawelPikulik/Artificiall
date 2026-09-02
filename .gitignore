@@ -9,3 +9,4 @@ ENV/
 env/
 .idea/
 .vscode/
+tasks.db
