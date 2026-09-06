@@ -3,11 +3,13 @@ from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from supabase import create_client, Client
+import httpx
 
 load_dotenv()
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables")
@@ -44,6 +46,23 @@ def sign_out(token: str):
             return False
         supabase.auth.sign_out()
         return True
+    except Exception:
+        return False
+
+
+def confirm_user(user_id: str) -> bool:
+    """Dev-only: auto-confirm a user via Supabase Admin API (requires service role key)."""
+    if not SUPABASE_SERVICE_KEY:
+        return False
+    try:
+        url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
+        headers = {
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "Content-Type": "application/json",
+        }
+        response = httpx.put(url, headers=headers, json={"email_confirm": True})
+        return response.status_code == 200
     except Exception:
         return False
 

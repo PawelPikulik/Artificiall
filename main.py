@@ -69,6 +69,8 @@ def signup(payload: SignupRequest):
     try:
         response = auth.sign_up(payload.email, payload.password)
         user = response.user
+        # Dev-only: auto-confirm user if SUPABASE_SERVICE_KEY is set
+        auth.confirm_user(user.id)
         return {
             "id": user.id,
             "email": user.email,
