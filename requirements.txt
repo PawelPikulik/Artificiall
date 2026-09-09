@@ -4,3 +4,5 @@ psycopg2-binary
 supabase
 python-dotenv
 httpx
+requests
+beautifulsoup4

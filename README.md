@@ -149,6 +149,65 @@ Create a few tasks, then run `docker compose down` followed by `docker compose u
 - **Reset endpoint**: `POST /reset` restores the 3 example tasks.
 - **Auth middleware**: `auth.get_current_user` is a reusable FastAPI dependency that extracts and verifies the Bearer token on any protected route.
 
+## The Polite Scraper (BE-05)
+
+A standalone scraper that collects books from [books.toscrape.com](https://books.toscrape.com) and turns messy HTML into clean, schema-validated JSON.
+
+### Why this matters
+Every AI system starts with data. This scraper demonstrates the habits that separate production code from quick tutorials:
+
+| Practice | Implementation |
+|----------|----------------|
+| **Check the rules first** | `urllib.robotparser` checks `robots.txt` before every page fetch |
+| **Identify yourself** | Custom `User-Agent` header with project name and GitHub link |
+| **Go slowly** | `time.sleep(1)` between page requests |
+| **Handle failures gracefully** | Broken pages, timeouts, and parse errors are caught and logged; the scraper continues |
+| **Validate every record** | Every book is parsed through a Pydantic `Book` schema |
+| **Clean raw data** | Prices like `"£51.77"` are turned into `51.77` before storage |
+
+### Run the scraper
+
+```bash
+python scraper.py
+```
+
+Output:
+```
+Starting polite scraper ...
+User-Agent: Mozilla/5.0 (compatible; ArtificiallBot/1.0; ...)
+Request delay: 1.0s
+
+Fetching https://books.toscrape.com/index.html ...
+  → 20 books parsed
+Fetching https://books.toscrape.com/catalogue/page-2.html ...
+  → 20 books parsed
+Fetching https://books.toscrape.com/catalogue/page-3.html ...
+  → 20 books parsed
+Saved 60 books to books.json
+
+Total books collected: 60
+```
+
+### Schema (`schemas.py`)
+
+```python
+class Book(BaseModel):
+    title: str
+    price: float        # cleaned from "£51.77" → 51.77
+    availability: str
+    rating: int         # 1-5, mapped from CSS classes like "star-rating Three"
+    url: str
+    image_url: str | None
+```
+
+### Files
+
+- `scraper.py` — full scraping logic with polite practices
+- `schemas.py` — Pydantic validation and data cleaning
+- `books.json` — generated output (60 validated records)
+
+---
+
 ## Testing
 
 A test suite (`test_api.py`) covers all task endpoints. Run it while the stack is up:
