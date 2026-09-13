@@ -70,7 +70,56 @@ The task CRUD routes are identical to Week 3. The new auth layer (`auth.py`) plu
 | PUT | `/tasks/{id}` | No | Update a task | 200, 400, 404 |
 | DELETE | `/tasks/{id}` | No | Delete a task | 204, 404 |
 | GET | `/stats` | No | Task statistics | 200 |
+| POST | `/tasks/{id}/analyze` | No | AI-powered task analysis | 200, 404, 503 |
 | POST | `/reset` | No | Reset tasks to defaults | 200 |
+
+## AI Task Analysis (BE-07)
+
+The `POST /tasks/{id}/analyze` endpoint sends a task title to a large language model and returns a structured, schema-validated judgement.
+
+**Data flow:**
+```
+Client → POST /tasks/1/analyze
+         ↓
+    FastAPI endpoint (main.py)
+         ↓
+    llm.analyze_task(title)
+         ↓
+    Groq API (free tier, no credit card)
+         ↓
+    Structured JSON response
+         ↓
+    Pydantic TaskAnalysis schema validation
+         ↓
+    200 OK → {task_id, title, analysis: {priority, category, estimated_minutes, reasoning}}
+```
+
+**Trust features:**
+- **Schema validation:** Every field is checked by Pydantic (priority must be High/Medium/Low, estimated_minutes 0-10080, reasoning 10-500 chars)
+- **Timeout:** Configurable per-request timeout (default 15s)
+- **Retries:** Exponential backoff on rate limits (429), connection errors, and 5xx. Max 3 attempts. 4xx client errors are NOT retried.
+- **Graceful degradation:** Returns 503 Service Unavailable with a clear message on LLM failure, so your app can decide what to do next.
+
+**How to get a free Groq API key:**
+1. Go to https://console.groq.com/keys
+2. Sign up (no credit card required)
+3. Create a new key and paste it into your `.env` as `GROQ_API_KEY`
+
+**Example:**
+```bash
+curl -X POST http://localhost:8000/tasks/1/analyze
+# Response:
+# {
+#   "task_id": 1,
+#   "title": "Buy groceries",
+#   "analysis": {
+#     "priority": "Medium",
+#     "category": "Errands",
+#     "estimated_minutes": 45,
+#     "reasoning": "Buying groceries is a routine weekly errand."
+#   }
+# }
+```
 
 ## Authentication flow
 

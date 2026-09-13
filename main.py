@@ -6,6 +6,7 @@ from typing import Optional
 
 import db
 import auth
+import llm
 
 app = FastAPI(
     title="Task API",
@@ -41,6 +42,12 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str = Field(..., description="User email")
     password: str = Field(..., description="User password")
+
+
+class TaskAnalysisResponse(BaseModel):
+    task_id: int = Field(..., description="ID of the analyzed task")
+    title: str = Field(..., description="Task title")
+    analysis: llm.TaskAnalysis = Field(..., description="AI-generated structured analysis")
 
 
 @app.get("/", summary="API Info")
@@ -182,3 +189,25 @@ def get_stats():
 def reset_tasks():
     """Reset the task list to the initial 3 example tasks."""
     return db.reset_tasks()
+
+
+@app.post("/tasks/{task_id}/analyze", status_code=200, summary="Analyze a Task with AI")
+def analyze_task_endpoint(task_id: int):
+    """Ask an LLM to judge a task's priority, category, and estimated duration.
+
+    Returns a structured, schema-validated analysis.
+    """
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    try:
+        analysis = llm.analyze_task(task["title"])
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    return TaskAnalysisResponse(
+        task_id=task_id,
+        title=task["title"],
+        analysis=analysis,
+    )

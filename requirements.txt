@@ -6,3 +6,4 @@ python-dotenv
 httpx
 requests
 beautifulsoup4
+groq
