@@ -266,3 +266,129 @@ python test_api.py
 ```
 
 For auth testing, use the curl examples above or the Swagger UI.
+
+## PDF Report Generator (BE-08)
+
+Generate styled PDF reports from SQL-aggregated data and scraped JSON catalogs — asynchronously, in the background, with artifact storage and scheduled recurrence.
+
+### Why this matters
+
+"Generate a report" is the most classic background job in software. This feature exercises everything from the last four weeks in one deliverable: SQL aggregation, artifact handling (store the path, not the 20 MB blob), and the background-job pattern.
+
+### Architecture
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| Database | `init.sql` | `reports` and `scheduled_reports` tables |
+| CRUD | `db.py` | Report & scheduled-report persistence |
+| PDF Engine | `report_generator.py` | `fpdf2`-based renderer with styled headers, tables, and text blocks |
+| Job Runner | `jobs.py` | FastAPI `BackgroundTasks` integration; status `pending → running → completed/failed` |
+| Scheduler | `scheduler.py` | APScheduler cron-style recurring reports |
+| API | `main.py` | `/reports` endpoints (POST, GET, download, DELETE) + `/reports/schedule` (stretch) |
+
+### Report types
+
+| Type | Data source | Contents |
+|------|-------------|----------|
+| `task_summary` | PostgreSQL `tasks` table | Total/completed/open counts, completion rate, full task list |
+| `book_catalog` | `books.json` (BE-05 scraper) | Catalog overview, price/rating aggregates, rating distribution histogram, top 15 books |
+
+### Quick start
+
+1. **Install new dependencies**
+   ```bash
+   pip install fpdf2 apscheduler
+   ```
+
+2. **Restart the stack** (so `init.sql` creates the new tables)
+   ```bash
+   docker compose down
+   docker compose up --build
+   ```
+
+3. **Authenticate** (same flow as above — sign up or log in to get an `access_token`)
+
+4. **Queue a report**
+   ```bash
+   curl -X POST http://localhost:8000/reports \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"report_type": "task_summary"}'
+   # → {"id": 1, "status": "pending", "download_url": "/reports/1/download"}
+   ```
+
+5. **Poll for completion**
+   ```bash
+   curl http://localhost:8000/reports/1 \
+     -H "Authorization: Bearer $TOKEN"
+   # → {"id": 1, "status": "completed", "file_path": "reports/task_summary_1.pdf", ...}
+   ```
+
+6. **Download the PDF**
+   ```bash
+   curl http://localhost:8000/reports/1/download \
+     -H "Authorization: Bearer $TOKEN" \
+     -o report_1.pdf
+   ```
+
+### Endpoints
+
+| Method | Path | Auth | Description | Status codes |
+|--------|------|------|-------------|--------------|
+| POST | `/reports` | **Yes** | Queue a PDF report | 202, 401, 422 |
+| GET | `/reports` | **Yes** | List your reports | 200, 401 |
+| GET | `/reports/{id}` | **Yes** | Get report status | 200, 401, 404 |
+| GET | `/reports/{id}/download` | **Yes** | Stream the PDF | 200, 401, 404, 409 |
+| DELETE | `/reports/{id}` | **Yes** | Delete report + file | 204, 401, 404 |
+| POST | `/reports/schedule` | **Yes** | Create recurring report | 201, 401, 422 |
+| GET | `/reports/schedule` | **Yes** | List scheduled reports | 200, 401 |
+| DELETE | `/reports/schedule/{id}` | **Yes** | Cancel scheduled report | 204, 401, 404 |
+
+### Background job pattern
+
+```
+POST /reports
+  → DB insert (status = pending)
+  → BackgroundTasks.add_task(run_report_job)
+  → 202 Accepted to client immediately
+
+Background worker:
+  → DB update (status = running)
+  → Query data + generate PDF → save to disk
+  → DB update (status = completed, file_path = ...)
+  → On error: DB update (status = failed, error_message = ...)
+```
+
+### Artifact handling
+
+- PDFs are stored in the `reports/` directory (Docker volume `reports_data`)
+- The database stores only the **file path** — never the binary content
+- On delete, both the DB row and the file are removed
+
+### Scheduled reports (stretch)
+
+```bash
+# Schedule a weekly task summary every Monday at 9:00 AM
+curl -X POST http://localhost:8000/reports/schedule \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"report_type": "task_summary", "cron": "0 9 * * 1"}'
+
+# List scheduled jobs
+curl http://localhost:8000/reports/schedule \
+  -H "Authorization: Bearer $TOKEN"
+
+# Cancel a scheduled job
+curl -X DELETE http://localhost:8000/reports/schedule/1 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Testing
+
+Run the report test suite while the stack is up:
+
+```bash
+python test_reports.py
+```
+
+This signs up a test user, queues both report types, polls until completion, downloads a PDF, validates the magic bytes (`%PDF`), and cleans up.
