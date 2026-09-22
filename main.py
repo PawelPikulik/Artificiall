@@ -1,17 +1,30 @@
-from fastapi import FastAPI, HTTPException, Request, Query, Depends
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Request, Query, Depends, BackgroundTasks
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 
 import db
 import auth
 import llm
+import jobs
+import scheduler as sched
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the report scheduler on startup and shut it down on exit."""
+    sched.start_scheduler()
+    yield
+    sched.stop_scheduler()
+
 
 app = FastAPI(
     title="Task API",
     version="2.0.0",
-    description="A secure CRUD API for managing tasks with Supabase authentication.",
+    description="A secure CRUD API for managing tasks with Supabase authentication, plus PDF report generation.",
+    lifespan=lifespan,
 )
 
 
@@ -48,6 +61,15 @@ class TaskAnalysisResponse(BaseModel):
     task_id: int = Field(..., description="ID of the analyzed task")
     title: str = Field(..., description="Task title")
     analysis: llm.TaskAnalysis = Field(..., description="AI-generated structured analysis")
+
+
+class ReportCreate(BaseModel):
+    report_type: str = Field(..., pattern=r"^(task_summary|book_catalog)$", description="Report type")
+
+
+class ReportScheduleCreate(BaseModel):
+    report_type: str = Field(..., pattern=r"^(task_summary|book_catalog)$", description="Report type")
+    cron: str = Field(..., min_length=1, description="Cron expression, e.g. '0 9 * * 1' for Mondays at 9am")
 
 
 @app.get("/", summary="API Info")
@@ -211,3 +233,93 @@ def analyze_task_endpoint(task_id: int):
         title=task["title"],
         analysis=analysis,
     )
+
+
+# ------------------------------------------------------------------
+# Report routes
+# ------------------------------------------------------------------
+
+@app.post("/reports", status_code=202, summary="Generate a Report", dependencies=[Depends(auth.get_current_user)])
+def create_report(payload: ReportCreate, background_tasks: BackgroundTasks, user=Depends(auth.get_current_user)):
+    """Queue a PDF report generation job. Returns immediately with a job ID.
+
+    The actual generation runs in the background; poll GET /reports/{id} for status.
+    """
+    report = db.create_report(report_type=payload.report_type, user_id=user.id)
+    background_tasks.add_task(jobs.run_report_job, report["id"], payload.report_type)
+    return {
+        "id": report["id"],
+        "status": report["status"],
+        "report_type": report["report_type"],
+        "download_url": f"/reports/{report['id']}/download",
+    }
+
+
+@app.get("/reports", summary="List Reports", dependencies=[Depends(auth.get_current_user)])
+def list_reports(user=Depends(auth.get_current_user)):
+    """List all reports for the authenticated user."""
+    return db.list_reports(user_id=user.id)
+
+
+@app.get("/reports/{report_id}", summary="Get Report Status", dependencies=[Depends(auth.get_current_user)])
+def get_report(report_id: int, user=Depends(auth.get_current_user)):
+    """Get a single report's status and metadata."""
+    report = db.get_report(report_id, user_id=user.id)
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    return report
+
+
+@app.get("/reports/{report_id}/download", summary="Download Report PDF", dependencies=[Depends(auth.get_current_user)])
+def download_report(report_id: int, user=Depends(auth.get_current_user)):
+    """Stream the generated PDF file. Returns 404 if the report is not yet completed."""
+    report = db.get_report(report_id, user_id=user.id)
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    if report["status"] != "completed":
+        raise HTTPException(status_code=409, detail=f"Report is {report['status']}; try again when completed.")
+    if not report.get("file_path"):
+        raise HTTPException(status_code=500, detail="Report completed but file path is missing.")
+    return FileResponse(report["file_path"], media_type="application/pdf", filename=f"report_{report_id}.pdf")
+
+
+@app.delete("/reports/{report_id}", status_code=204, summary="Delete a Report", dependencies=[Depends(auth.get_current_user)])
+def delete_report(report_id: int, user=Depends(auth.get_current_user)):
+    """Remove a report and its PDF file."""
+    report = db.get_report(report_id, user_id=user.id)
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    jobs.cleanup_report_file(report_id)
+    db.delete_report(report_id, user_id=user.id)
+    return None
+
+
+# ------------------------------------------------------------------
+# Scheduled report routes (stretch)
+# ------------------------------------------------------------------
+
+@app.post("/reports/schedule", status_code=201, summary="Schedule a Recurring Report", dependencies=[Depends(auth.get_current_user)])
+def schedule_report(payload: ReportScheduleCreate, user=Depends(auth.get_current_user)):
+    """Create a recurring scheduled report job using a cron expression."""
+    scheduled = sched.add_scheduled_job(
+        report_type=payload.report_type,
+        cron=payload.cron,
+        user_id=user.id,
+    )
+    return scheduled
+
+
+@app.get("/reports/schedule", summary="List Scheduled Reports", dependencies=[Depends(auth.get_current_user)])
+def list_scheduled_reports(user=Depends(auth.get_current_user)):
+    """List all recurring scheduled reports for the authenticated user."""
+    return db.list_scheduled_reports(user_id=user.id)
+
+
+@app.delete("/reports/schedule/{scheduled_id}", status_code=204, summary="Cancel a Scheduled Report", dependencies=[Depends(auth.get_current_user)])
+def cancel_scheduled_report(scheduled_id: int, user=Depends(auth.get_current_user)):
+    """Deactivate a scheduled report and remove it from the scheduler."""
+    scheduled = db.get_scheduled_report(scheduled_id, user_id=user.id)
+    if scheduled is None:
+        raise HTTPException(status_code=404, detail=f"Scheduled report {scheduled_id} not found")
+    sched.remove_scheduled_job(scheduled_id)
+    return None
