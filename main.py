@@ -11,6 +11,7 @@ import auth
 import llm
 import jobs
 import scheduler as sched
+import analysis_worker
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,6 +62,18 @@ class TaskAnalysisResponse(BaseModel):
     task_id: int = Field(..., description="ID of the analyzed task")
     title: str = Field(..., description="Task title")
     analysis: llm.TaskAnalysis = Field(..., description="AI-generated structured analysis")
+
+
+class JobStatusResponse(BaseModel):
+    id: int = Field(..., description="Job ID")
+    task_id: int = Field(..., description="Task ID")
+    status: str = Field(..., description="pending | running | completed | failed")
+    result: Optional[dict] = Field(None, description="Structured analysis result when completed")
+    error_message: Optional[str] = Field(None, description="Error details when failed")
+    attempts: int = Field(..., description="Number of execution attempts")
+    max_attempts: int = Field(..., description="Maximum retry attempts")
+    created_at: Optional[str] = Field(None, description="ISO timestamp when job was created")
+    completed_at: Optional[str] = Field(None, description="ISO timestamp when job finished")
 
 
 class ReportCreate(BaseModel):
@@ -213,25 +226,74 @@ def reset_tasks():
     return db.reset_tasks()
 
 
-@app.post("/tasks/{task_id}/analyze", status_code=200, summary="Analyze a Task with AI")
-def analyze_task_endpoint(task_id: int):
-    """Ask an LLM to judge a task's priority, category, and estimated duration.
+@app.post("/tasks/{task_id}/analyze", status_code=202, summary="Queue AI Task Analysis")
+def analyze_task_endpoint(task_id: int, background_tasks: BackgroundTasks):
+    """Queue an LLM analysis of a task. Returns 202 Accepted immediately.
 
-    Returns a structured, schema-validated analysis.
+    The actual analysis runs in the background. Poll GET /jobs/{job_id} for status.
+    If a completed or running job already exists for this task, it is reused
+    (idempotency — no duplicate work).
     """
     task = db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    try:
-        analysis = llm.analyze_task(task["title"])
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+    job = analysis_worker.find_or_create_job(task_id, max_attempts=3)
+
+    # Only enqueue if the job is fresh (pending) or we created a new one
+    if job["status"] == "pending":
+        background_tasks.add_task(analysis_worker.run_analysis_job, job["id"])
+
+    return {
+        "job_id": job["id"],
+        "status": job["status"],
+        "status_url": f"/jobs/{job['id']}",
+        "message": "Analysis queued. Poll status_url for progress.",
+    }
+
+
+@app.get("/jobs/{job_id}", status_code=200, summary="Get Job Status")
+def get_job_status(job_id: int):
+    """Check the status of a background analysis job.
+
+    Returns the full result when completed, or error details when failed.
+    """
+    job = db.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return JobStatusResponse(
+        id=job["id"],
+        task_id=job["task_id"],
+        status=job["status"],
+        result=job.get("result"),
+        error_message=job.get("error_message"),
+        attempts=job["attempts"],
+        max_attempts=job["max_attempts"],
+        created_at=job.get("created_at"),
+        completed_at=job.get("completed_at"),
+    )
+
+
+@app.get("/tasks/{task_id}/analysis", status_code=200, summary="Get Task Analysis Result")
+def get_task_analysis(task_id: int):
+    """Shortcut: get the latest completed analysis result for a task.
+
+    Returns 404 if the task has never been analyzed.
+    """
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    job = db.find_latest_job_for_task(task_id, job_type="task_analysis")
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} has not been analyzed yet. POST /tasks/{task_id}/analyze to start.")
+    if job["status"] != "completed":
+        raise HTTPException(status_code=409, detail=f"Analysis is {job['status']}. Check /jobs/{job['id']} for progress.")
 
     return TaskAnalysisResponse(
         task_id=task_id,
         title=task["title"],
-        analysis=analysis,
+        analysis=llm.TaskAnalysis(**job["result"]["analysis"]),
     )
 
 
