@@ -1,6 +1,6 @@
 import os
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, Json
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://artificiall:artificiall@db:5432/artificiall")
 
@@ -315,3 +315,95 @@ def reset_tasks():
     rows = cursor.fetchall()
     conn.close()
     return [row_to_task(row) for row in rows]
+
+
+# ── Jobs ──────────────────────────────────────────────────────────────
+
+def _row_to_job(row) -> dict:
+    return {
+        "id": row["id"],
+        "task_id": row["task_id"],
+        "job_type": row["job_type"],
+        "status": row["status"],
+        "result": row["result"],
+        "error_message": row["error_message"],
+        "attempts": row["attempts"],
+        "max_attempts": row["max_attempts"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+        "metadata": row["metadata"],
+    }
+
+
+def create_job(task_id: int, job_type: str = "task_analysis", max_attempts: int = 3, metadata: dict = None):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO jobs (task_id, job_type, status, max_attempts, metadata) VALUES (%s, %s, %s, %s, %s) RETURNING *",
+        (task_id, job_type, "pending", max_attempts, psycopg2.extras.Json(metadata or {})),
+    )
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+    return _row_to_job(row)
+
+
+def get_job(job_id: int):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return _row_to_job(row)
+
+
+def find_latest_job_for_task(task_id: int, job_type: str = "task_analysis"):
+    """Find the most recent job for a given task. Used for idempotency."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM jobs WHERE task_id = %s AND job_type = %s ORDER BY created_at DESC LIMIT 1",
+        (task_id, job_type),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return _row_to_job(row)
+
+
+def update_job_status(job_id: int, status: str, result: dict = None, error_message: str = None, attempts: int = None):
+    conn = get_db()
+    cursor = conn.cursor()
+    updates = ["status = %s"]
+    params = [status]
+    if status in ("completed", "failed"):
+        updates.append("completed_at = NOW()")
+    if result is not None:
+        updates.append("result = %s")
+        params.append(psycopg2.extras.Json(result))
+    if error_message is not None:
+        updates.append("error_message = %s")
+        params.append(error_message)
+    if attempts is not None:
+        updates.append("attempts = %s")
+        params.append(attempts)
+    query = f"UPDATE jobs SET {', '.join(updates)} WHERE id = %s"
+    params.append(job_id)
+    cursor.execute(query, params)
+    conn.commit()
+    cursor.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return _row_to_job(row)
+
+
+def list_jobs(limit: int = 50):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT %s", (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [_row_to_job(row) for row in rows]

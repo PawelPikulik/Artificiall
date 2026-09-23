@@ -267,6 +267,87 @@ python test_api.py
 
 For auth testing, use the curl examples above or the Swagger UI.
 
+## Background Jobs (BE-06)
+
+Move the slow AI call out of the request path. The endpoint answers instantly with **202 Accepted**, a worker does the work in the background, and a status endpoint reports the result.
+
+### Why this matters
+
+Every production system has slow operations: LLM calls, PDF generation, email delivery, data exports. The professional pattern is always the same: **accept fast, work in the background, report status**. This assignment also enforces the non-negotiables: jobs will run twice (idempotency), they will fail (retries), and someone must find out (alerts).
+
+### Architecture
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| Database | `init.sql` | `jobs` table with status, result, attempts, error_message |
+| CRUD | `db.py` | Job persistence with `find_latest_job_for_task()` for idempotency |
+| Worker | `analysis_worker.py` | Background runner with 3-attempt retry + exponential backoff |
+| API | `main.py` | `POST /tasks/{id}/analyze` → 202, `GET /jobs/{id}` → status, `GET /tasks/{id}/analysis` → result |
+
+### Background job pattern
+
+```
+POST /tasks/1/analyze
+  → Check for existing completed/running job (idempotency)
+  → If none: DB insert (status = pending)
+  → BackgroundTasks.add_task(run_analysis_job)
+  → 202 Accepted to client immediately
+
+Background worker:
+  → DB update (status = running, attempts += 1)
+  → Call LLM → validate response
+  → DB update (status = completed, result = JSON)
+  → On error: retry up to max_attempts with exponential backoff
+  → After exhaustion: DB update (status = failed, error_message = traceback)
+```
+
+### Idempotency
+
+If you call `POST /tasks/1/analyze` twice, the second call returns the **same `job_id`** as the first — no duplicate LLM work, no wasted tokens. This is enforced by `find_latest_job_for_task()` in `analysis_worker.py`.
+
+### Retries
+
+The worker retries transient failures (network, rate limit, timeout) up to 3 times with exponential backoff: 1s → 2s → 4s between attempts.
+
+### Failure alerting
+
+When all retries are exhausted, the full traceback is stored in `jobs.error_message` and exposed via `GET /jobs/{id}`. No silent failures.
+
+### Quick start
+
+```bash
+# Queue an analysis (returns instantly)
+curl -X POST http://localhost:8000/tasks/1/analyze \
+  -H "Authorization: Bearer $TOKEN"
+# → {"job_id": 1, "status": "pending", "status_url": "/jobs/1"}
+
+# Poll for completion
+curl http://localhost:8000/jobs/1 \
+  -H "Authorization: Bearer $TOKEN"
+# → {"id": 1, "status": "completed", "result": {"task_id": 1, "analysis": {...}}}
+
+# Shortcut: get result directly
+curl http://localhost:8000/tasks/1/analysis \
+  -H "Authorization: Bearer $TOKEN"
+# → {"task_id": 1, "title": "Buy groceries", "analysis": {"priority": "Medium", ...}}
+```
+
+### Endpoints
+
+| Method | Path | Auth | Description | Status codes |
+|--------|------|------|-------------|--------------|
+| POST | `/tasks/{id}/analyze` | **Yes** | Queue AI analysis job | 202, 401, 404 |
+| GET | `/jobs/{id}` | **Yes** | Get job status & result | 200, 401, 404 |
+| GET | `/tasks/{id}/analysis` | **Yes** | Shortcut to completed result | 200, 401, 404, 409 |
+
+### Testing
+
+Run the background job test suite while the stack is up:
+
+```bash
+python test_jobs.py
+```
+
 ## PDF Report Generator (BE-08)
 
 Generate styled PDF reports from SQL-aggregated data and scraped JSON catalogs — asynchronously, in the background, with artifact storage and scheduled recurrence.
